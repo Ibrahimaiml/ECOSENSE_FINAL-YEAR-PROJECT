@@ -40,6 +40,10 @@ else:
 import json
 import re
 import base64
+import threading
+import time
+import socket
+import requests
 try:
     from google import genai
     from google.genai import types
@@ -52,7 +56,8 @@ try:
 except ImportError:
     genai_legacy = None
 
-GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_REST_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 client = None
 _legacy_gemini_ready = False
 if GEMINI_KEY and GEMINI_KEY != "your_gemini_api_key_here":
@@ -68,17 +73,55 @@ if GEMINI_KEY and GEMINI_KEY != "your_gemini_api_key_here":
         except Exception as e:
             print(f"[EcoSense Warning] Legacy Gemini initialization note: {e}")
 
-import socket
+_gemini_reach_cache = {"ok": None, "ts": 0.0}
 
 def is_gemini_reachable() -> bool:
+    """Bounded reachability check so offline/sandbox DNS never stalls requests."""
+    now = time.monotonic()
+    if _gemini_reach_cache["ok"] is not None and (now - _gemini_reach_cache["ts"]) < 30.0:
+        return bool(_gemini_reach_cache["ok"])
+
+    result = {"ok": False}
+    def _probe():
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.35)
+            res = sock.connect_ex(("generativelanguage.googleapis.com", 443))
+            sock.close()
+            result["ok"] = (res == 0)
+        except Exception:
+            result["ok"] = False
+
+    t = threading.Thread(target=_probe, daemon=True)
+    t.start()
+    t.join(timeout=0.4)
+    _gemini_reach_cache["ok"] = result["ok"]
+    _gemini_reach_cache["ts"] = now
+    return result["ok"]
+
+def _has_gemini_key() -> bool:
+    return bool(GEMINI_KEY and GEMINI_KEY != "your_gemini_api_key_here")
+
+def _gemini_rest_generate(parts: List[Dict[str, Any]], timeout: float = 4.5) -> Optional[str]:
+    """Direct Gemini 2.5 Flash REST API call via requests.post without heavy SDK deps."""
+    if not _has_gemini_key():
+        return None
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(0.3)
-        res = sock.connect_ex(("generativelanguage.googleapis.com", 443))
-        sock.close()
-        return res == 0
+        resp = requests.post(
+            GEMINI_REST_URL,
+            params={"key": GEMINI_KEY},
+            json={"contents": [{"parts": parts}]},
+            timeout=timeout,
+        )
+        if resp.status_code == 200:
+            candidates = resp.json().get("candidates") or []
+            if candidates:
+                resp_parts = candidates[0].get("content", {}).get("parts") or []
+                if resp_parts:
+                    return resp_parts[0].get("text")
     except Exception:
-        return False
+        pass
+    return None
 
 
 
@@ -695,8 +738,8 @@ async def analyze_land(request: Request):
             req_obj = RedesignRequest(prompt=prompt_text, sceneState=scene_state)
             return await redesign_3d(req_obj)
         
-        # 1. Automated Land Photo / Blueprint Analysis via Gemini Vision
-        if (client or _legacy_gemini_ready) and is_gemini_reachable():
+        # 1. Automated Land Photo / Blueprint Analysis via Gemini Vision (SDK or REST API)
+        if _has_gemini_key() and is_gemini_reachable():
             try:
                 vision_prompt = """
                 Analyze this land photo, hand sketch, or 2D architectural blueprint image.
@@ -744,26 +787,39 @@ async def analyze_land(request: Request):
                     for model_name in ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-3.8-flash']:
                         if client is not None and types is not None:
                             try:
-                                return client.models.generate_content(
+                                r = client.models.generate_content(
                                     model=model_name,
                                     contents=[types.Part.from_bytes(data=image_bytes, mime_type=mime_type), vision_prompt]
                                 )
+                                if r and r.text:
+                                    return r.text
                             except Exception:
                                 pass
                         if _legacy_gemini_ready and genai_legacy is not None:
                             try:
                                 model = genai_legacy.GenerativeModel(model_name)
-                                return model.generate_content(
+                                r = model.generate_content(
                                     [vision_prompt, {"mime_type": mime_type, "data": image_bytes}],
                                     request_options={"timeout": 4},
                                 )
+                                if r and r.text:
+                                    return r.text
                             except Exception:
                                 pass
-                    return None
+                    # Lightweight REST API fallback (zero SDK required)
+                    return _gemini_rest_generate([
+                        {"text": vision_prompt},
+                        {
+                            "inline_data": {
+                                "mime_type": mime_type,
+                                "data": base64.b64encode(image_bytes).decode("utf-8"),
+                            }
+                        },
+                    ])
 
-                response = await asyncio.wait_for(asyncio.to_thread(_call_gemini_vision), timeout=4.5)
-                if response and response.text:
-                    parsed = clean_json_response(response.text)
+                response_text = await asyncio.wait_for(asyncio.to_thread(_call_gemini_vision), timeout=4.5)
+                if response_text:
+                    parsed = clean_json_response(response_text)
                     if "rooms" in parsed:
                         if "roomWalls" not in parsed:
                             parsed["roomWalls"] = copy.deepcopy(DEFAULT_LAYOUT["roomWalls"])
@@ -965,8 +1021,8 @@ async def redesign_3d(req: RedesignRequest):
         layout["estimated_savings_inr"] = savings_inr
         layout["shgc"] = shgc_val
 
-        # Attempt live Gemini LLM call if client configured
-        if (client or _legacy_gemini_ready) and is_gemini_reachable():
+        # Attempt live Gemini LLM call (SDK or REST API fallback) if key configured
+        if _has_gemini_key() and is_gemini_reachable():
             try:
                 system_instruction = f"""
                 You are EcoSense AI Building Architecture, Vision, and Thermal Energy Engine.
@@ -992,26 +1048,31 @@ async def redesign_3d(req: RedesignRequest):
                     for model_name in ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-3.8-flash']:
                         if client is not None:
                             try:
-                                return client.models.generate_content(
+                                r = client.models.generate_content(
                                     model=model_name,
                                     contents=system_instruction
                                 )
+                                if r and r.text:
+                                    return r.text
                             except Exception:
                                 pass
                         if _legacy_gemini_ready and genai_legacy is not None:
                             try:
                                 model = genai_legacy.GenerativeModel(model_name)
-                                return model.generate_content(
+                                r = model.generate_content(
                                     system_instruction,
                                     request_options={"timeout": 4},
                                 )
+                                if r and r.text:
+                                    return r.text
                             except Exception:
                                 pass
-                    return None
+                    # Lightweight REST API fallback (zero SDK required)
+                    return _gemini_rest_generate([{"text": system_instruction}])
 
-                response = await asyncio.wait_for(asyncio.to_thread(_call_gemini_llm), timeout=3.5)
-                if response and response.text:
-                    ai_json = clean_json_response(response.text)
+                response_text = await asyncio.wait_for(asyncio.to_thread(_call_gemini_llm), timeout=4.0)
+                if response_text:
+                    ai_json = clean_json_response(response_text)
                     if "actionType" in ai_json and "energyMetricsDelta" in ai_json:
                         delta = ai_json.get("energyMetricsDelta", {})
                         hvac_tr = delta.get("tr", hvac_tr)

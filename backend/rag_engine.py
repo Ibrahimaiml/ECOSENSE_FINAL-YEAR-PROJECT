@@ -7,12 +7,20 @@ and provides semantic similarity search via query_tariff_rules().
 import os
 import re
 import json
+import math
 import hashlib
-import numpy as np
+import requests
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 import sys
 from pathlib import Path
+
+try:
+    import google.generativeai as genai_legacy
+except ImportError:
+    genai_legacy = None
+
+GEMINI_REST_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 _this_dir = Path(__file__).resolve().parent
 root_dir = _this_dir if (_this_dir / "backend").exists() else _this_dir.parent
 for _path_entry in (str(root_dir), str(_this_dir)):
@@ -96,7 +104,7 @@ def generate_embedding(text: str, dim: int = EMBEDDING_DIM) -> List[float]:
     based on vocabulary overlap, temporal keywords, and domain concepts.
     """
     text_lower = text.lower()
-    vec = np.zeros(dim, dtype=np.float32)
+    vec = [0.0] * dim
 
     # Keywords with specific semantic clustering dimensions
     concept_map = {
@@ -130,10 +138,10 @@ def generate_embedding(text: str, dim: int = EMBEDDING_DIM) -> List[float]:
         vec[idx] += 1.0
 
     # Normalize to unit length for cosine similarity
-    norm = np.linalg.norm(vec)
-    if norm > 0:
-        vec = vec / norm
-    return vec.tolist()
+    norm = math.sqrt(sum(v * v for v in vec))
+    if norm > 0.0:
+        vec = [v / norm for v in vec]
+    return vec
 
 def init_tariff_vector_store():
     """Seeds the initial tariff and building code rules into pgvector or local fallback."""
@@ -231,11 +239,13 @@ def query_tariff_rules(current_time: Any, top_k: int = 3) -> List[Dict[str, Any]
         init_tariff_vector_store()
 
     scored_docs = []
-    q_vec = np.array(query_emb, dtype=np.float32)
+    q_norm = math.sqrt(sum(v * v for v in query_emb))
     for doc in local_store.tariff_docs:
-        d_vec = np.array(doc["embedding"], dtype=np.float32)
-        sim = float(np.dot(q_vec, d_vec) / (np.linalg.norm(q_vec) * np.linalg.norm(d_vec) + 1e-9))
-        
+        d_vec = doc["embedding"]
+        d_norm = math.sqrt(sum(v * v for v in d_vec))
+        dot_val = sum(a * b for a, b in zip(query_emb, d_vec))
+        sim = float(dot_val / (q_norm * d_norm + 1e-9))
+
         # Boost rule matching current hour
         if doc.get("peak_period_start") is not None and doc.get("peak_period_end") is not None:
             if doc["peak_period_start"] <= hour < doc["peak_period_end"]:
@@ -253,6 +263,41 @@ def query_tariff_rules(current_time: Any, top_k: int = 3) -> List[Dict[str, Any]
 
     scored_docs.sort(key=lambda x: x["similarity_score"], reverse=True)
     return scored_docs[:top_k]
+
+
+def generate_tariff_advisory(prompt: str) -> Optional[str]:
+    """Synthesizes tariff advice via google-generativeai SDK if installed, else Gemini REST API."""
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key or api_key == "your_gemini_api_key_here":
+        return None
+
+    if genai_legacy is not None:
+        try:
+            genai_legacy.configure(api_key=api_key)
+            model = genai_legacy.GenerativeModel("gemini-2.5-flash")
+            res = model.generate_content(prompt)
+            if res and res.text:
+                return res.text
+        except Exception:
+            pass
+
+    try:
+        resp = requests.post(
+            GEMINI_REST_URL,
+            params={"key": api_key},
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            timeout=6,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            candidates = data.get("candidates") or []
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts") or []
+                if parts:
+                    return parts[0].get("text")
+    except Exception:
+        pass
+    return None
 
 # Initialize vector store on module load
 init_tariff_vector_store()

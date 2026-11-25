@@ -83,66 +83,63 @@ You MUST respond strictly with a valid JSON object with these exact keys:
 """
 
 def _is_gemini_reachable() -> bool:
-    try:
-        import socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(0.3)
-        res = sock.connect_ex(("generativelanguage.googleapis.com", 443))
-        sock.close()
-        return res == 0
-    except Exception:
-        return False
+    import threading
+    result = {"ok": False}
+    def _probe():
+        try:
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.35)
+            res = sock.connect_ex(("generativelanguage.googleapis.com", 443))
+            sock.close()
+            result["ok"] = (res == 0)
+        except Exception:
+            result["ok"] = False
+
+    t = threading.Thread(target=_probe, daemon=True)
+    t.start()
+    t.join(timeout=0.4)
+    return result["ok"]
 
 
 def _call_gemini_agent(prompt: str) -> Optional[Dict[str, Any]]:
-    """Attempts agent invocation via google-antigravity or google-genai with fast reachability guard."""
+    """Attempts agent invocation via SDK or lightweight Gemini REST API fallback."""
     if not GEMINI_API_KEY or GEMINI_API_KEY in ["your_gemini_api_key_here", ""]:
         return None
     if not _is_gemini_reachable():
         return None
 
-    # Try google.antigravity SDK
+    # Lightweight Gemini REST API first/fallback without heavy binary SDKs
     try:
-        from google import antigravity
-        # Check if AgentConfig or client can be initialized
-        if hasattr(antigravity, "Agent"):
-            # Attempt antigravity agent invocation
-            config = antigravity.AgentConfig(
-                model=MODEL_NAME
-            )
-            agent = antigravity.Agent(config)
-            response = agent.run(prompt)
-            text = response.text if hasattr(response, "text") else str(response)
-            match = re.search(r'\{.*\}', text, re.DOTALL)
-            if match:
-                return json.loads(match.group(0))
-    except Exception as e:
-        logger.debug(f"[Antigravity SDK] Standard call attempted: {e}")
-
-    # Fallback to google.genai / google.generativeai
-    try:
-        from google import genai
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
+        import requests
+        resp = requests.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            params={"key": GEMINI_API_KEY},
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            timeout=4,
         )
-        text = response.text
-        match = re.search(r'\{.*\}', text, re.DOTALL)
-        if match:
-            return json.loads(match.group(0))
+        if resp.status_code == 200:
+            candidates = resp.json().get("candidates") or []
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts") or []
+                if parts:
+                    text = parts[0].get("text", "")
+                    match = re.search(r'\{.*\}', text, re.DOTALL)
+                    if match:
+                        return json.loads(match.group(0))
     except Exception as e:
-        logger.debug(f"[Google GenAI] Call fallback: {e}")
+        logger.debug(f"[Gemini REST Agent] Call note: {e}")
 
+    # Optional SDK fallback when installed
     try:
         import google.generativeai as genai_legacy
         genai_legacy.configure(api_key=GEMINI_API_KEY)
-        model = genai_legacy.GenerativeModel(MODEL_NAME)
+        model = genai_legacy.GenerativeModel("gemini-2.5-flash")
         res = model.generate_content(prompt)
         match = re.search(r'\{.*\}', res.text, re.DOTALL)
         if match:
             return json.loads(match.group(0))
-    except Exception as e:
+    except (ImportError, Exception) as e:
         logger.debug(f"[Legacy GenAI] Call: {e}")
 
     return None

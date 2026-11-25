@@ -2,6 +2,11 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "cd frontend && npm install && npm run build",
   "outputDirectory": "frontend/dist",
+  "functions": {
+    "api/index.py": {
+      "excludeFiles": "{frontend/**,data/**,dbt_ecosense/**,node_modules/**,.git/**}"
+    }
+  },
   "rewrites": [
     {
       "source": "/api/(.*)",

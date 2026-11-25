@@ -14,9 +14,9 @@ Supports:
 import os
 import math
 import json
+import statistics
 import urllib.request
 import urllib.error
-import numpy as np
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -88,15 +88,15 @@ def forecast_building_load(
     temperature_2m: float = 32.0,
     scale_factor: float = 1.0
 ) -> float:
-    """Predicts building energy consumption (kWh) using XGBoost model scaled to custom house size."""
+    """Predicts building energy consumption (kWh) via XGBoost when installed, else pure-Python math/statistics."""
     model = get_or_train_model()
     raw_pred = None
     if model is not None:
         try:
-            features = np.array([[
+            features = [[
                 hour, day_of_week, month, is_weekend, tariff_rate_inr,
                 lag_1h, lag_24h, rolling_mean_3h, temperature_2m
-            ]])
+            ]]
             raw_pred = float(model.predict(features)[0])
         except Exception:
             pass
@@ -104,7 +104,8 @@ def forecast_building_load(
     if raw_pred is None:
         base = 0.5 + 0.08 * (temperature_2m - 20) + 0.6 * math.sin(2 * math.pi * (hour - 6) / 24)
         peak = 1.2 if (16 <= hour <= 21) else 0.0
-        raw_pred = base + peak
+        hist_anchor = statistics.fmean([lag_1h, lag_24h, rolling_mean_3h])
+        raw_pred = 0.7 * (base + peak) + 0.3 * hist_anchor
 
     # Scale according to custom house size & appliances vs 240 m² reference
     scaled = raw_pred * scale_factor
