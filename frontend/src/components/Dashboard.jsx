@@ -16,7 +16,7 @@ import Footer from './Footer';
  * - Solid bold white typography (color: #FFFFFF, font-weight: 900)
  * - Core platform modules & exact Pic 4 footer
  */
-export default function Dashboard({ activeSection, activeTab, user, onSectionClick }) {
+export default function Dashboard({ activeSection, activeTab, user, onSectionClick, onLogout }) {
   const heroRef = useRef(null);
   const [activeHouseProfile, setActiveHouseProfile] = useState(null);
 
@@ -40,6 +40,7 @@ export default function Dashboard({ activeSection, activeTab, user, onSectionCli
         activeTab={activeTab}
         user={user}
         onSectionClick={onSectionClick}
+        onLogout={onLogout}
       />
 
       <main style={{ paddingTop: 0, minHeight: '100vh', backgroundColor: '#050505' }}>

@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { Clock } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Clock, LogOut, ChevronDown } from 'lucide-react';
 
 const SECTIONS = [
   { id: 'home', label: 'Home' },
@@ -11,13 +11,32 @@ const SECTIONS = [
 
 /**
  * Navbar — Clean fixed dashboard header.
- * No PostgreSQL status pills. Live clock + user avatar retained.
+ * Live clock + interactive user avatar dropdown with Sign Out / Logout.
  */
-export default function Navbar({ activeSection, activeTab, user, onSectionClick }) {
+export default function Navbar({ activeSection, activeTab, user, onSectionClick, onLogout }) {
   const [time, setTime] = useState('');
   const [scrolled, setScrolled] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef(null);
 
   const currentTab = activeTab || activeSection || 'home';
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        setMenuOpen(false);
+      }
+    };
+    const handleEsc = (e) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEsc);
+    };
+  }, []);
 
   useEffect(() => {
     const tick = () => {
@@ -105,18 +124,87 @@ export default function Navbar({ activeSection, activeTab, user, onSectionClick 
         </div>
 
         {user && (
-          <div
-            style={{
-              width: 34, height: 34, borderRadius: '50%',
-              background: 'linear-gradient(135deg, #84CC16, #4ade80)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: '0.72rem', fontWeight: 800, color: '#0A0A0A',
-              flexShrink: 0, letterSpacing: '0.02em',
-              boxShadow: '0 0 14px rgba(132,204,22,0.35)',
-            }}
-            title={user.name}
-          >
-            {user.avatar || user.name.slice(0, 2).toUpperCase()}
+          <div ref={menuRef} style={{ position: 'relative' }}>
+            <button
+              type="button"
+              onClick={() => setMenuOpen(o => !o)}
+              aria-label="Account menu"
+              aria-expanded={menuOpen}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                background: 'rgba(255,255,255,0.04)',
+                border: menuOpen ? '1px solid rgba(132,204,22,0.55)' : '1px solid rgba(255,255,255,0.1)',
+                borderRadius: 999, padding: '3px 8px 3px 3px',
+                cursor: 'none', transition: 'border-color 0.2s ease, background 0.2s ease',
+              }}
+              title={user.name || user.email || 'Account'}
+            >
+              <span
+                style={{
+                  width: 30, height: 30, borderRadius: '50%',
+                  background: 'linear-gradient(135deg, #84CC16, #4ade80)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: '0.72rem', fontWeight: 800, color: '#0A0A0A',
+                  flexShrink: 0, letterSpacing: '0.02em',
+                  boxShadow: '0 0 14px rgba(132,204,22,0.35)',
+                }}
+              >
+                {user.avatar || (user.name ? user.name.slice(0, 2).toUpperCase() : 'EA')}
+              </span>
+              <ChevronDown
+                size={13}
+                color="#8B8B8B"
+                style={{ transform: menuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s ease' }}
+              />
+            </button>
+
+            {menuOpen && (
+              <div
+                style={{
+                  position: 'absolute', top: 'calc(100% + 10px)', right: 0,
+                  minWidth: 230, borderRadius: 14,
+                  background: 'rgba(13, 13, 13, 0.96)',
+                  backdropFilter: 'blur(20px)',
+                  WebkitBackdropFilter: 'blur(20px)',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  boxShadow: '0 20px 50px rgba(0,0,0,0.85)',
+                  padding: 12, zIndex: 1100,
+                }}
+              >
+                <div style={{ padding: '6px 8px 10px', borderBottom: '1px solid rgba(255,255,255,0.08)', marginBottom: 8 }}>
+                  <div style={{ fontSize: '0.84rem', fontWeight: 700, color: '#FFFFFF', fontFamily: 'Outfit, sans-serif' }}>
+                    {user.name || 'Authenticated User'}
+                  </div>
+                  {user.email && (
+                    <div style={{ fontSize: '0.73rem', color: '#8B8B8B', marginTop: 2, wordBreak: 'break-all' }}>
+                      {user.email}
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    if (typeof onLogout === 'function') onLogout();
+                  }}
+                  style={{
+                    width: '100%', display: 'flex', alignItems: 'center', gap: 9,
+                    padding: '9px 10px', borderRadius: 9,
+                    background: 'rgba(244,63,94,0.1)',
+                    border: '1px solid rgba(244,63,94,0.28)',
+                    color: '#fb7185',
+                    fontFamily: 'Outfit, sans-serif', fontSize: '0.82rem', fontWeight: 700,
+                    cursor: 'none', transition: 'background 0.2s ease',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(244,63,94,0.22)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'rgba(244,63,94,0.1)'; }}
+                >
+                  <LogOut size={14} />
+                  <span>Sign Out / Logout</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -29,6 +29,7 @@ export default function AuthModal({ onAuth, onClose }) {
   const [countdown, setCountdown] = useState(60);
   const [isOffline, setIsOffline] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [otpUnavailable, setOtpUnavailable] = useState(false);
 
   const otpInputsRef = useRef([]);
   const lastActionRef = useRef(null);
@@ -140,6 +141,7 @@ export default function AuthModal({ onAuth, onClose }) {
       const data = await response.json();
       if (response.ok && data.success) {
         // ONLY transition state when backend returns 200 OK
+        setOtpUnavailable(false);
         setStep('VERIFY_OTP');
         setCountdown(60);
         setOtp(['', '', '', '', '', '']);
@@ -147,15 +149,35 @@ export default function AuthModal({ onAuth, onClose }) {
         console.log('[EcoSense Auth System] Server response: OTP successfully dispatched to', userEmail);
       } else {
         const errorDetail = data.detail || data.message || 'Server Error';
-        setError(`Failed to send OTP: ${errorDetail}`);
+        if (response.status >= 500 || errorDetail.toLowerCase().includes('smtp')) {
+          setOtpUnavailable(true);
+          setError('Email OTP delivery is not configured in this deployment. You can continue below using Demo Session.');
+        } else {
+          setError(`Failed to send OTP: ${errorDetail}`);
+        }
       }
     } catch (err) {
       console.error("OTP Delivery Error:", err);
       setIsOffline(true);
-      setError("Cannot connect to backend server. Ensure the server is running on port 8000.");
+      setOtpUnavailable(true);
+      setError("Email OTP endpoint unavailable. Retry or continue with Demo Session below.");
     } finally {
       setLoading(false);
     }
+  };
+
+  // Explicit user-initiated fallback login when production Email OTP / Entra ID isn't configured
+  const handleDemoSignIn = () => {
+    const typed = email.trim().toLowerCase();
+    const validTyped = typed && typed.includes('@') ? typed : 'architect@ecosense.ai';
+    const rawName = validTyped.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    const name = rawName || 'Executive Architect';
+    onAuth({
+      name,
+      email: validTyped,
+      provider: 'demo',
+      avatar: name.slice(0, 2).toUpperCase(),
+    });
   };
 
   // ── 3. Strict 6-Digit Backend OTP Verification Gate ──
@@ -466,6 +488,36 @@ export default function AuthModal({ onAuth, onClose }) {
                   style={{ width: '100%', justifyContent: 'center', padding: '13px', marginTop: 4 }}
                 >
                   {loading ? <><div className="spinner" /> Dispatching OTP...</> : <>Continue with Email &amp; OTP <ArrowRight size={16} /></>}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDemoSignIn}
+                  disabled={loading}
+                  style={{
+                    width: '100%',
+                    marginTop: 6,
+                    padding: '10px 14px',
+                    borderRadius: 12,
+                    background: otpUnavailable ? 'rgba(132,204,22,0.16)' : 'rgba(255,255,255,0.04)',
+                    border: otpUnavailable ? '1px solid rgba(132,204,22,0.55)' : '1px solid rgba(255,255,255,0.1)',
+                    color: otpUnavailable ? '#a3e635' : '#94a3b8',
+                    fontFamily: 'Outfit, sans-serif',
+                    fontSize: '0.82rem',
+                    fontWeight: 600,
+                    cursor: 'none',
+                    transition: 'all 0.2s ease',
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.background = 'rgba(132,204,22,0.14)';
+                    e.currentTarget.style.color = '#ffffff';
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.background = otpUnavailable ? 'rgba(132,204,22,0.16)' : 'rgba(255,255,255,0.04)';
+                    e.currentTarget.style.color = otpUnavailable ? '#a3e635' : '#94a3b8';
+                  }}
+                >
+                  Continue with Demo Session (No OTP Required)
                 </button>
               </form>
             </>

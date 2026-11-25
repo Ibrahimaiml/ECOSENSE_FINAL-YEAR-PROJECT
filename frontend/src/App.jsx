@@ -9,34 +9,51 @@ import Dashboard from './components/Dashboard';
 import ErrorBoundary from './components/ErrorBoundary';
 
 /**
- * App — Executive Multi-Tab Architecture:
- * - Default State: Stage 4 (Main Platform Dashboard) with activeTab = 'home'
- * - Safe localStorage reads with try/catch fallbacks
- * - Explicit dark background (#050505) and full viewport bounds
+ * App — 4-Stage Auth-Gated Architecture:
+ *   Stage 1: Preloader (0→100% counter)
+ *   Stage 2: Public Intro Page (Video hero + vertical stacked reveal)
+ *   Stage 3: Auth Modal overlay (Microsoft Entra ID / Email + OTP / Demo fallback)
+ *   Stage 4: Main Platform Dashboard (Protected behind sessionStorage auth gate)
  */
 
 const SECTION_IDS = ['home', 'ecosense-core', 'studio', 'electricity', 'financial'];
+const SESSION_USER_KEY = 'ecosense_user';
+
+function loadSessionUser() {
+  try {
+    const stored = sessionStorage.getItem(SESSION_USER_KEY);
+    if (!stored) return null;
+    const parsed = JSON.parse(stored);
+    if (parsed && typeof parsed === 'object' && (parsed.email || parsed.name)) {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 export default function App() {
-  // Default to Stage 4: Dashboard with Executive Profile
-  const [stage, setStage] = useState(4);
-  const [isAuthenticated, setIsAuthenticated] = useState(true);
-  const [user, setUser] = useState(() => {
-    try {
-      const stored = localStorage.getItem('ecosense_user');
-      return stored ? JSON.parse(stored) : { name: 'Executive Architect', avatar: 'EA' };
-    } catch {
-      return { name: 'Executive Architect', avatar: 'EA' };
-    }
-  });
-
-  // Default active tab state set to 'home'
+  const [initialSession] = useState(() => loadSessionUser());
+  const [isAuthenticated, setIsAuthenticated] = useState(() => Boolean(initialSession));
+  const [user, setUser] = useState(() => initialSession);
+  const [stage, setStage] = useState(() => (initialSession ? 4 : 1));
   const [activeTab, setActiveTab] = useState('home');
   const [activeSection, setActiveSection] = useState('home');
   const [showAuthModal, setShowAuthModal] = useState(false);
 
-  // Sync activeTab with activeSection
+  // Clean up any legacy persistent localStorage user entries so sessions remain tab-scoped
+  useEffect(() => {
+    try {
+      localStorage.removeItem(SESSION_USER_KEY);
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
+  // Sync activeTab with activeSection when dashboard is mounted
   const handleTabChange = useCallback((tabId) => {
+    if (!isAuthenticated) return;
     setActiveTab(tabId);
     setActiveSection(tabId);
 
@@ -48,9 +65,9 @@ export default function App() {
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-  }, [stage]);
+  }, [isAuthenticated, stage]);
 
-  // Track active section via IntersectionObserver when in Stage 4
+  // Track active section via IntersectionObserver (authenticated Stage 4 only)
   useEffect(() => {
     if (!isAuthenticated || stage !== 4) return;
     const observers = [];
@@ -72,9 +89,9 @@ export default function App() {
     return () => observers.forEach(o => o.disconnect());
   }, [isAuthenticated, stage]);
 
-  // Stage 1 → 2
+  // Stage 1 → 2 (only advance to intro if not already authenticated)
   const handlePreloaderComplete = useCallback(() => {
-    setStage(2);
+    setStage(prev => (prev === 1 ? 2 : prev));
   }, []);
 
   // Stage 2 → 3 (open auth modal)
@@ -89,10 +106,11 @@ export default function App() {
     setStage(2);
   }, []);
 
-  // Stage 3 → 4 (successful auth)
+  // Stage 3 → 4 (successful auth via Entra ID, Email + OTP, or Demo session)
   const handleAuth = useCallback((userData) => {
+    if (!userData) return;
     try {
-      localStorage.setItem('ecosense_user', JSON.stringify(userData));
+      sessionStorage.setItem(SESSION_USER_KEY, JSON.stringify(userData));
     } catch {
       // ignore storage errors
     }
@@ -103,6 +121,26 @@ export default function App() {
     setActiveTab('home');
     setActiveSection('home');
     setTimeout(() => window.scrollTo({ top: 0, behavior: 'instant' }), 0);
+  }, []);
+
+  // Sign Out: clears sessionStorage + MSAL session keys and returns to Intro / Login screen
+  const handleLogout = useCallback(() => {
+    try {
+      sessionStorage.removeItem(SESSION_USER_KEY);
+      localStorage.removeItem(SESSION_USER_KEY);
+      Object.keys(sessionStorage).forEach(k => {
+        if (k.startsWith('msal.')) sessionStorage.removeItem(k);
+      });
+    } catch {
+      // ignore storage errors
+    }
+    setUser(null);
+    setIsAuthenticated(false);
+    setShowAuthModal(false);
+    setStage(2);
+    setActiveTab('home');
+    setActiveSection('home');
+    window.scrollTo({ top: 0, behavior: 'instant' });
   }, []);
 
   return (
@@ -121,29 +159,32 @@ export default function App() {
       <CustomCursor />
 
       {/* ── Stage 1: Preloader Screen ── */}
-      {stage === 1 && <Preloader onComplete={handlePreloaderComplete} />}
+      {!isAuthenticated && stage === 1 && (
+        <Preloader onComplete={handlePreloaderComplete} />
+      )}
 
       {/* ── Stage 2: Public Intro Page ── */}
-      {stage === 2 && (
+      {(!isAuthenticated && (stage === 2 || stage === 4)) && (
         <IntroPage onSignIn={handleSignInClick} />
       )}
 
       {/* ── Stage 3: Auth Modal (overlaid on intro) ── */}
-      {stage === 3 && (
+      {!isAuthenticated && stage === 3 && (
         <>
           <IntroPage onSignIn={handleSignInClick} />
           {showAuthModal && <AuthModal onAuth={handleAuth} onClose={handleAuthClose} />}
         </>
       )}
 
-      {/* ── Stage 4: Main Platform Dashboard ── */}
-      {stage === 4 && (
+      {/* ── Stage 4: Main Platform Dashboard (Strict Auth Gate) ── */}
+      {isAuthenticated && user && stage === 4 && (
         <ErrorBoundary>
           <Dashboard
             activeSection={activeSection}
             activeTab={activeTab}
             user={user}
             onSectionClick={handleTabChange}
+            onLogout={handleLogout}
           />
         </ErrorBoundary>
       )}
