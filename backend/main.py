@@ -1211,12 +1211,58 @@ class VerifyOtpRequest(BaseModel):
     email: str
     code: Optional[str] = None
     otp: Optional[str] = None
+    otp_token: Optional[str] = None
 
 class MicrosoftAuthRequest(BaseModel):
     id_token: str = Field(..., description="Microsoft Entra ID token to verify")
 
-# In-memory store: email -> { hash: str, salt: str, expires_at: float, attempts: int, last_sent: float }
+# In-memory store (backward compatible local fallback): email -> { hash, salt, expires_at, attempts, last_sent }
 _otp_sessions: Dict[str, Dict[str, Any]] = {}
+
+def _get_otp_signing_secret() -> str:
+    """Derives HMAC signing key from server secrets so tokens verify across Vercel cold starts."""
+    return (
+        os.getenv("OTP_SECRET", "").strip()
+        or os.getenv("SMTP_PASSWORD", "").strip()
+        or os.getenv("GEMINI_API_KEY", "").strip()
+        or "ecosense-stateless-otp-key"
+    )
+
+def _create_stateless_otp_token(email: str, otp_code: str, expires_at: float) -> str:
+    """Creates an HMAC-SHA256 signed token binding email, OTP, and expiration without leaking plaintext OTP."""
+    payload = {
+        "email": email,
+        "expires_at": int(expires_at),
+        "nonce": secrets.token_hex(8),
+    }
+    payload_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    payload_b64 = base64.urlsafe_b64encode(payload_bytes).decode("ascii").rstrip("=")
+    signing_input = f"{payload_b64}|{otp_code}".encode("utf-8")
+    sig = hmac.new(_get_otp_signing_secret().encode("utf-8"), signing_input, hashlib.sha256).hexdigest()
+    return f"{payload_b64}.{sig}"
+
+def _verify_stateless_otp_token(token: str, email: str, entered_otp: str) -> None:
+    """Verifies HMAC-SHA256 otp_token signature, email match, expiration, and OTP code."""
+    try:
+        payload_b64, sig = token.strip().split(".", 1)
+        padded = payload_b64 + "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid verification token. Please request a new code.")
+
+    token_email = str(payload.get("email", "")).strip().lower()
+    if not token_email or not hmac.compare_digest(token_email, email):
+        raise HTTPException(status_code=400, detail="Verification token does not match this email address.")
+
+    now = datetime.utcnow().timestamp()
+    expires_at = float(payload.get("expires_at", 0))
+    if now > expires_at:
+        raise HTTPException(status_code=400, detail="Verification code has expired. Please request a new code.")
+
+    signing_input = f"{payload_b64}|{entered_otp}".encode("utf-8")
+    expected_sig = hmac.new(_get_otp_signing_secret().encode("utf-8"), signing_input, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected_sig):
+        raise HTTPException(status_code=400, detail="Invalid verification code. Please check the 6-digit code and try again.")
 
 def _send_sync_smtp(to_email: str, otp_code: str) -> None:
     """
@@ -1357,21 +1403,24 @@ async def send_otp(request: SendOtpRequest):
             detail=f"Failed to deliver email: {str(e)}"
         )
 
-    # Save salted hash session only on successful SMTP handoff
+    # Save salted hash session for warm/local dev AND generate stateless HMAC token for Vercel serverless
+    expires_at = now + 300  # 5 minutes
     _otp_sessions[email] = {
         "hash": code_hash,
         "salt": salt,
-        "expires_at": now + 300,  # 5 minutes
+        "expires_at": expires_at,
         "attempts": 0,
         "last_sent": now
     }
+    otp_token = _create_stateless_otp_token(email=email, otp_code=code, expires_at=expires_at)
 
     masked_email = email[:2] + "***@" + email.split("@")[-1] if "@" in email else "user"
     print(f"[AUTH] OTP email sent to {masked_email}")
 
     return {
         "success": True,
-        "status": "OTP_SENT",
+        "status": "sent",
+        "otp_token": otp_token,
         "message": f"OTP successfully sent to {email}. Check your inbox and spam folder.",
         "expires_in": 300
     }
@@ -1382,9 +1431,9 @@ async def send_otp(request: SendOtpRequest):
 @app.post("/api/v1/auth/verify-otp")
 async def verify_otp(request: VerifyOtpRequest):
     """
-    Strict OTP Verification Gate:
-    Constant-time compare (hmac.compare_digest), enforces expiry & 5 max attempts,
-    deletes OTP after success (single-use), returns success payload.
+    Strict Stateless + In-Memory OTP Verification Gate:
+    Verifies HMAC-SHA256 otp_token across serverless cold starts (with backward-compatible
+    in-memory _otp_sessions fallback for local callers without otp_token).
     """
     email = request.email.strip().lower()
     entered = (request.otp or request.code or "").strip()
@@ -1392,42 +1441,47 @@ async def verify_otp(request: VerifyOtpRequest):
     if not entered or len(entered) != 6 or not entered.isdigit():
         raise HTTPException(status_code=400, detail="Please enter all 6 digits of your verification code.")
 
-    session = _otp_sessions.get(email)
-    if not session:
-        raise HTTPException(
-            status_code=400,
-            detail="No active verification session found. Please request a new code."
-        )
-
-    now = datetime.utcnow().timestamp()
-    if now > session.get("expires_at", 0):
+    if request.otp_token:
+        _verify_stateless_otp_token(token=request.otp_token, email=email, entered_otp=entered)
         _otp_sessions.pop(email, None)
-        raise HTTPException(
-            status_code=400,
-            detail="Verification code has expired. Please request a new code."
-        )
+    else:
+        session = _otp_sessions.get(email)
+        if not session:
+            raise HTTPException(
+                status_code=400,
+                detail="No active verification session found. Please request a new code."
+            )
 
-    if session.get("attempts", 0) >= 5:
+        now = datetime.utcnow().timestamp()
+        if now > session.get("expires_at", 0):
+            _otp_sessions.pop(email, None)
+            raise HTTPException(
+                status_code=400,
+                detail="Verification code has expired. Please request a new code."
+            )
+
+        if session.get("attempts", 0) >= 5:
+            _otp_sessions.pop(email, None)
+            raise HTTPException(
+                status_code=400,
+                detail="Maximum verification attempts exceeded. Please request a new code."
+            )
+
+        salt = session.get("salt", "")
+        expected_hash = session.get("hash", "")
+        calculated_hash = hashlib.sha256((salt + entered).encode()).hexdigest()
+
+        if not hmac.compare_digest(calculated_hash, expected_hash):
+            session["attempts"] = session.get("attempts", 0) + 1
+            remaining_attempts = 5 - session["attempts"]
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid verification code. {remaining_attempts} attempts remaining."
+            )
+
+        # Single-use deletion immediately on successful verification
         _otp_sessions.pop(email, None)
-        raise HTTPException(
-            status_code=400,
-            detail="Maximum verification attempts exceeded. Please request a new code."
-        )
 
-    salt = session.get("salt", "")
-    expected_hash = session.get("hash", "")
-    calculated_hash = hashlib.sha256((salt + entered).encode()).hexdigest()
-
-    if not hmac.compare_digest(calculated_hash, expected_hash):
-        session["attempts"] = session.get("attempts", 0) + 1
-        remaining_attempts = 5 - session["attempts"]
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid verification code. {remaining_attempts} attempts remaining."
-        )
-
-    # Single-use deletion immediately on successful verification
-    _otp_sessions.pop(email, None)
     name = email.split("@")[0].replace(".", " ").title()
 
     return {

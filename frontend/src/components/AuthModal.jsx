@@ -30,6 +30,7 @@ export default function AuthModal({ onAuth, onClose }) {
   const [isOffline, setIsOffline] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [otpUnavailable, setOtpUnavailable] = useState(false);
+  const [otpToken, setOtpToken] = useState('');
 
   const otpInputsRef = useRef([]);
   const lastActionRef = useRef(null);
@@ -130,6 +131,7 @@ export default function AuthModal({ onAuth, onClose }) {
     setError('');
     setIsOffline(false);
     setToastMessage('');
+    setOtpToken('');
     lastActionRef.current = () => handleSendOTP(userEmail);
 
     try {
@@ -139,9 +141,11 @@ export default function AuthModal({ onAuth, onClose }) {
         body: JSON.stringify({ email: userEmail })
       });
       const data = await response.json();
-      if (response.ok && data.success) {
-        // ONLY transition state when backend returns 200 OK
+      if (response.ok && (data.success || data.status === 'sent' || data.status === 'OTP_SENT')) {
+        // Store stateless HMAC token for serverless OTP verification and clear any prior error
+        setError('');
         setOtpUnavailable(false);
+        setOtpToken(data.otp_token || '');
         setStep('VERIFY_OTP');
         setCountdown(60);
         setOtp(['', '', '', '', '', '']);
@@ -202,13 +206,14 @@ export default function AuthModal({ onAuth, onClose }) {
       const response = await fetchWithRetry(`${API_BASE_URL}/api/verify-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: userEmail, otp: enteredCode })
+        body: JSON.stringify({ email: userEmail, otp: enteredCode, otp_token: otpToken })
       });
       const data = await response.json();
 
       // Grant dashboard access ONLY when backend returns { verified: true }
       if (response.ok && (data.verified === true || data.status === 'VERIFIED')) {
         console.log('[EcoSense Auth System] Verification successful for', userEmail);
+        setOtpToken('');
         const name = data?.user?.name || userEmail.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, c => c.toUpperCase());
         onAuth({
           name: name || 'Enterprise Engineer',
