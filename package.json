@@ -1,0 +1,14 @@
+{
+  "name": "ecosense-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "EcoSense AI - Autonomous Building Intelligence & Dual-Phase HVAC Control Platform",
+  "scripts": {
+    "dev": "concurrently -k -p \"[{name}]\" -n \"BACKEND,FRONTEND\" -c \"blue.bold,green.bold\" \"uvicorn backend.main:app --reload --port 8000\" \"npm run dev --prefix frontend\"",
+    "dev:backend": "uvicorn backend.main:app --reload --port 8000",
+    "dev:frontend": "npm run dev --prefix frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

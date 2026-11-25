@@ -1,0 +1,19 @@
+name: 'dbt_ecosense'
+version: '1.0.0'
+profile: 'dbt_ecosense'
+
+model-paths: ["models"]
+target-path: "target"
+clean-targets: ["target"]
+
+models:
+  dbt_ecosense:
+    bronze:
+      +materialized: table
+      +schema: bronze
+    silver:
+      +materialized: table
+      +schema: silver
+    gold:
+      +materialized: external
+      +schema: gold

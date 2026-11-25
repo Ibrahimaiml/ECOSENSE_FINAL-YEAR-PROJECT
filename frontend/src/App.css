@@ -1,0 +1,15 @@
+/* App.css — minimal overrides for the new SPA layout */
+
+#root {
+  min-height: 100vh;
+}
+
+/* Smooth section transitions */
+section {
+  scroll-margin-top: 64px;
+}
+
+/* Ensure video fills container precisely */
+video {
+  object-position: center center;
+}
