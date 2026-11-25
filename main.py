@@ -20,11 +20,12 @@ from typing import Dict, Any, List, Optional
 from pathlib import Path
 import jwt
 
-# Add project root to sys.path
+# Add project root and module directory to sys.path for both monorepo and backend-only deploys
 _this_dir = Path(__file__).resolve().parent
 root_dir = _this_dir if (_this_dir / "backend").exists() else _this_dir.parent
-if str(root_dir) not in sys.path:
-    sys.path.insert(0, str(root_dir))
+for _path_entry in (str(root_dir), str(_this_dir)):
+    if _path_entry not in sys.path:
+        sys.path.insert(0, _path_entry)
 
 from dotenv import load_dotenv, find_dotenv
 env_path = find_dotenv()
@@ -65,17 +66,32 @@ from fastapi import FastAPI, HTTPException, status, UploadFile, File, Request, F
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from backend.db import (
-    insert_sensor_telemetry,
-    save_building_metadata,
-    get_recent_telemetry,
-    get_recent_actions,
-    local_store,
-    get_postgres_connection
-)
-from backend.agentic_hvac_control import run_hvac_agent
-from backend.rag_engine import query_tariff_rules
-from backend.ml_predictor import forecast_building_load
+try:
+    from backend.db import (
+        insert_sensor_telemetry,
+        save_building_metadata,
+        get_recent_telemetry,
+        get_recent_actions,
+        local_store,
+        get_postgres_connection,
+        get_active_database_info,
+    )
+    from backend.agentic_hvac_control import run_hvac_agent
+    from backend.rag_engine import query_tariff_rules
+    from backend.ml_predictor import forecast_building_load, telemetry_sim
+except ModuleNotFoundError:
+    from db import (
+        insert_sensor_telemetry,
+        save_building_metadata,
+        get_recent_telemetry,
+        get_recent_actions,
+        local_store,
+        get_postgres_connection,
+        get_active_database_info,
+    )
+    from agentic_hvac_control import run_hvac_agent
+    from rag_engine import query_tariff_rules
+    from ml_predictor import forecast_building_load, telemetry_sim
 
 app = FastAPI(
     title="EcoSense AI Gateway",
@@ -83,18 +99,10 @@ app = FastAPI(
     version="2.0.0"
 )
 
-# Enable CORS for frontend development and production
+# Enable CORS for local development and production Vercel frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$",
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -191,17 +199,27 @@ _cached_layout = {
 
 # ----------------- ENDPOINTS -----------------
 
+@app.get("/")
+@app.get("/health")
+def root_health_check():
+    """Root health endpoint for Render cloud readiness probes."""
+    return {
+        "status": "HEALTHY",
+        "service": "EcoSense AI Optimization Gateway",
+        "version": "2.0.0",
+        "timestamp": datetime.utcnow().isoformat(),
+        "database": get_active_database_info(),
+        "docs": "/docs",
+    }
+
 @app.get("/api/v1/health")
 def health_check():
-    conn = get_postgres_connection()
+    db_info = get_active_database_info()
     return {
         "status": "HEALTHY",
         "service": "EcoSense AI Optimization Gateway",
         "timestamp": datetime.utcnow().isoformat(),
-        "database": {
-            "engine": "PostgreSQL (Standard Native Engine)" if conn else "In-Memory Resilient Engine",
-            "connected": bool(conn)
-        },
+        "database": db_info,
         "ml_core": {
             "model": "XGBoost Regressor",
             "benchmark_r2": 0.9973,
@@ -234,8 +252,6 @@ def ingest_telemetry(payload: TelemetryPayload):
         "kwh_consumed": data["kwh_consumed"],
         "indoor_temp": data["indoor_temp"]
     }
-
-from backend.ml_predictor import telemetry_sim, forecast_building_load
 
 class TelemetryLiveRequest(BaseModel):
     houseProfile: Optional[Dict[str, Any]] = None

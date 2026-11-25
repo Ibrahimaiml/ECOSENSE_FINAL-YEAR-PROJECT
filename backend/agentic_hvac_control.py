@@ -12,16 +12,23 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 import sys
 from pathlib import Path
-root_dir = Path(__file__).resolve().parent.parent
-if str(root_dir) not in sys.path:
-    sys.path.insert(0, str(root_dir))
+_this_dir = Path(__file__).resolve().parent
+root_dir = _this_dir if (_this_dir / "backend").exists() else _this_dir.parent
+for _path_entry in (str(root_dir), str(_this_dir)):
+    if _path_entry not in sys.path:
+        sys.path.insert(0, _path_entry)
 
 from dotenv import load_dotenv
 load_dotenv(root_dir / ".env")
 
-from backend.ml_predictor import forecast_building_load
-from backend.rag_engine import query_tariff_rules
-from backend.db import insert_hvac_action_log
+try:
+    from backend.ml_predictor import forecast_building_load
+    from backend.rag_engine import query_tariff_rules
+    from backend.db import insert_hvac_action_log
+except ModuleNotFoundError:
+    from ml_predictor import forecast_building_load
+    from rag_engine import query_tariff_rules
+    from db import insert_hvac_action_log
 
 logger = logging.getLogger("EcoSenseAgent")
 

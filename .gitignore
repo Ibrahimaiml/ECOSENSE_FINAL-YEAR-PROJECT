@@ -39,6 +39,12 @@ dist-ssr/
 logs/
 *.log
 
+# Local SQLite cloud fallback databases
+*.db
+*.sqlite
+*.sqlite3
+ecosense_cloud.db
+
 # OS
 .DS_Store
 Thumbs.db

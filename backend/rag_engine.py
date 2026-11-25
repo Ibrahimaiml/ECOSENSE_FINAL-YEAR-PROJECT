@@ -13,14 +13,19 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 import sys
 from pathlib import Path
-root_dir = Path(__file__).resolve().parent.parent
-if str(root_dir) not in sys.path:
-    sys.path.insert(0, str(root_dir))
+_this_dir = Path(__file__).resolve().parent
+root_dir = _this_dir if (_this_dir / "backend").exists() else _this_dir.parent
+for _path_entry in (str(root_dir), str(_this_dir)):
+    if _path_entry not in sys.path:
+        sys.path.insert(0, _path_entry)
 
 from dotenv import load_dotenv
 load_dotenv(root_dir / ".env")
 
-from backend.db import get_postgres_connection, local_store
+try:
+    from backend.db import get_postgres_connection, local_store
+except ModuleNotFoundError:
+    from db import get_postgres_connection, local_store
 
 # Knowledge Base: Utility Time-of-Use (ToU) Tariffs & Building Energy Codes
 DEFAULT_TARIFF_DOCS = [
