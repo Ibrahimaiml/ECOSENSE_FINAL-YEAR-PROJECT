@@ -18,7 +18,10 @@ from email.utils import formatdate, make_msgid
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from pathlib import Path
-import jwt
+try:
+    import jwt
+except ImportError:
+    jwt = None
 
 # Add project root and module directory to sys.path for both monorepo and backend-only deploys
 _this_dir = Path(__file__).resolve().parent
@@ -37,16 +40,33 @@ else:
 import json
 import re
 import base64
-from google import genai
-from google.genai import types
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    genai = None
+    types = None
+
+try:
+    import google.generativeai as genai_legacy
+except ImportError:
+    genai_legacy = None
 
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 client = None
+_legacy_gemini_ready = False
 if GEMINI_KEY and GEMINI_KEY != "your_gemini_api_key_here":
-    try:
-        client = genai.Client(api_key=GEMINI_KEY)
-    except Exception as e:
-        print(f"[EcoSense Warning] Gemini client initialization note: {e}")
+    if genai is not None:
+        try:
+            client = genai.Client(api_key=GEMINI_KEY)
+        except Exception as e:
+            print(f"[EcoSense Warning] Gemini client initialization note: {e}")
+    if genai_legacy is not None:
+        try:
+            genai_legacy.configure(api_key=GEMINI_KEY)
+            _legacy_gemini_ready = True
+        except Exception as e:
+            print(f"[EcoSense Warning] Legacy Gemini initialization note: {e}")
 
 import socket
 
@@ -201,8 +221,10 @@ _cached_layout = {
 
 @app.get("/")
 @app.get("/health")
+@app.get("/api")
+@app.get("/api/health")
 def root_health_check():
-    """Root health endpoint for Render cloud readiness probes."""
+    """Root health endpoint for Vercel & Render cloud readiness probes."""
     return {
         "status": "HEALTHY",
         "service": "EcoSense AI Optimization Gateway",
@@ -674,7 +696,7 @@ async def analyze_land(request: Request):
             return await redesign_3d(req_obj)
         
         # 1. Automated Land Photo / Blueprint Analysis via Gemini Vision
-        if client and is_gemini_reachable():
+        if (client or _legacy_gemini_ready) and is_gemini_reachable():
             try:
                 vision_prompt = """
                 Analyze this land photo, hand sketch, or 2D architectural blueprint image.
@@ -719,14 +741,24 @@ async def analyze_land(request: Request):
                 }
                 """
                 def _call_gemini_vision():
-                    for model_name in ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-1.5-flash']:
-                        try:
-                            return client.models.generate_content(
-                                model=model_name,
-                                contents=[types.Part.from_bytes(data=image_bytes, mime_type=mime_type), vision_prompt]
-                            )
-                        except Exception:
-                            continue
+                    for model_name in ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-3.8-flash']:
+                        if client is not None and types is not None:
+                            try:
+                                return client.models.generate_content(
+                                    model=model_name,
+                                    contents=[types.Part.from_bytes(data=image_bytes, mime_type=mime_type), vision_prompt]
+                                )
+                            except Exception:
+                                pass
+                        if _legacy_gemini_ready and genai_legacy is not None:
+                            try:
+                                model = genai_legacy.GenerativeModel(model_name)
+                                return model.generate_content(
+                                    [vision_prompt, {"mime_type": mime_type, "data": image_bytes}],
+                                    request_options={"timeout": 4},
+                                )
+                            except Exception:
+                                pass
                     return None
 
                 response = await asyncio.wait_for(asyncio.to_thread(_call_gemini_vision), timeout=4.5)
@@ -934,7 +966,7 @@ async def redesign_3d(req: RedesignRequest):
         layout["shgc"] = shgc_val
 
         # Attempt live Gemini LLM call if client configured
-        if client and is_gemini_reachable():
+        if (client or _legacy_gemini_ready) and is_gemini_reachable():
             try:
                 system_instruction = f"""
                 You are EcoSense AI Building Architecture, Vision, and Thermal Energy Engine.
@@ -957,14 +989,24 @@ async def redesign_3d(req: RedesignRequest):
                 }}
                 """
                 def _call_gemini_llm():
-                    for model_name in ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-1.5-flash']:
-                        try:
-                            return client.models.generate_content(
-                                model=model_name,
-                                contents=system_instruction
-                            )
-                        except Exception:
-                            continue
+                    for model_name in ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-3.8-flash']:
+                        if client is not None:
+                            try:
+                                return client.models.generate_content(
+                                    model=model_name,
+                                    contents=system_instruction
+                                )
+                            except Exception:
+                                pass
+                        if _legacy_gemini_ready and genai_legacy is not None:
+                            try:
+                                model = genai_legacy.GenerativeModel(model_name)
+                                return model.generate_content(
+                                    system_instruction,
+                                    request_options={"timeout": 4},
+                                )
+                            except Exception:
+                                pass
                     return None
 
                 response = await asyncio.wait_for(asyncio.to_thread(_call_gemini_llm), timeout=3.5)
@@ -1353,6 +1395,9 @@ async def auth_microsoft(request: MicrosoftAuthRequest):
         raise HTTPException(status_code=400, detail="Missing Microsoft ID token.")
 
     azure_client_id = os.getenv("AZURE_CLIENT_ID", "").strip() or os.getenv("VITE_AZURE_CLIENT_ID", "").strip()
+
+    if jwt is None:
+        raise HTTPException(status_code=501, detail="Microsoft token verification requires PyJWT[crypto].")
 
     try:
         jwks_url = "https://login.microsoftonline.com/common/discovery/v2.0/keys"

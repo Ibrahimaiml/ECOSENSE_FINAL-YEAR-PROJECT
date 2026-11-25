@@ -22,6 +22,8 @@ import {
 } from 'lucide-react';
 import TelemetryChart, { ApplianceRadarChart } from './TelemetryChart';
 
+const API_BASE_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+
 /* ── Pure SVG Sankey Diagram ── */
 function SankeyDiagram({ totalKwh = 5.1 }) {
   const zones = [
@@ -124,7 +126,7 @@ function EnergyChat() {
     setLoading(true);
 
     try {
-      const res = await fetch('/api/v1/energy-chat', {
+      const res = await fetch(`${API_BASE_URL}/api/v1/energy-chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: msg }),
@@ -240,7 +242,7 @@ function SMSAlertConfig() {
     if (!phone || !threshold) return;
     setSubmitting(true);
     try {
-      await fetch('/api/v1/configure-alerts', {
+      await fetch(`${API_BASE_URL}/api/v1/configure-alerts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone, threshold_inr: parseFloat(threshold) }),
@@ -458,7 +460,9 @@ export default function ElectricityBill({ houseProfile: propHouseProfile }) {
     const src = overrideSource || dataSource;
 
     try {
-      const url = advance ? '/api/telemetry/simulate-tick' : '/api/telemetry/live';
+      const url = advance
+        ? `${API_BASE_URL}/api/telemetry/simulate-tick`
+        : `${API_BASE_URL}/api/telemetry/live`;
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

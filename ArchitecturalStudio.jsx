@@ -13,6 +13,8 @@ import {
 } from 'lucide-react';
 import FloorPlanViewer3D from './FloorPlanViewer3D';
 
+const API_BASE_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+
 // ─── Color name to hex dictionary for dynamic color parsing ───────────────────
 const COLOR_MAP = {
   red: '#cc2222', crimson: '#990000', scarlet: '#e11d48', ruby: '#be123c',
@@ -245,13 +247,13 @@ export default function ArchitecturalStudio({ onLayoutChange }) {
 
       let res;
       try {
-        res = await fetch('/api/architectural/analyze-land', {
+        res = await fetch(`${API_BASE_URL}/api/architectural/analyze-land`, {
           method: 'POST',
           body: formData,
           signal: AbortSignal.timeout(15000),
         });
       } catch {
-        res = await fetch('/api/analyze-land', {
+        res = await fetch(`${API_BASE_URL}/api/analyze-land`, {
           method: 'POST',
           body: formData,
           signal: AbortSignal.timeout(15000),
@@ -490,7 +492,7 @@ export default function ArchitecturalStudio({ onLayoutChange }) {
     try {
       let res;
       try {
-        res = await fetch('/api/architectural/redesign', {
+        res = await fetch(`${API_BASE_URL}/api/architectural/redesign`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -503,7 +505,7 @@ export default function ArchitecturalStudio({ onLayoutChange }) {
           signal: AbortSignal.timeout(12000),
         });
       } catch {
-        res = await fetch('/api/redesign-3d', {
+        res = await fetch(`${API_BASE_URL}/api/redesign-3d`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

@@ -82,9 +82,23 @@ You MUST respond strictly with a valid JSON object with these exact keys:
 }}
 """
 
+def _is_gemini_reachable() -> bool:
+    try:
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(0.3)
+        res = sock.connect_ex(("generativelanguage.googleapis.com", 443))
+        sock.close()
+        return res == 0
+    except Exception:
+        return False
+
+
 def _call_gemini_agent(prompt: str) -> Optional[Dict[str, Any]]:
-    """Attempts agent invocation via google-antigravity or google-genai."""
+    """Attempts agent invocation via google-antigravity or google-genai with fast reachability guard."""
     if not GEMINI_API_KEY or GEMINI_API_KEY in ["your_gemini_api_key_here", ""]:
+        return None
+    if not _is_gemini_reachable():
         return None
 
     # Try google.antigravity SDK

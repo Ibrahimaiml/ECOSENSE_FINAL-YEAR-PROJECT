@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { ShieldCheck, Mail, AlertTriangle, ArrowRight, CheckCircle2, RotateCw } from 'lucide-react';
 import { authenticateWithMicrosoft } from '../authConfig';
 
+const API_BASE_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+
 const ENTERPRISE_METRICS = [
   { value: '$15.46B', label: 'Measured book' },
   { value: '171', label: 'Payers priced' },
@@ -74,7 +76,7 @@ export default function AuthModal({ onAuth, onClose }) {
         const idToken = result.user.idToken;
         if (idToken) {
           try {
-            const resp = await fetch('/api/auth/microsoft', {
+            const resp = await fetch(`${API_BASE_URL}/api/auth/microsoft`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ id_token: idToken }),
@@ -130,7 +132,7 @@ export default function AuthModal({ onAuth, onClose }) {
     lastActionRef.current = () => handleSendOTP(userEmail);
 
     try {
-      const response = await fetchWithRetry('/api/send-otp', {
+      const response = await fetchWithRetry(`${API_BASE_URL}/api/send-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: userEmail })
@@ -175,7 +177,7 @@ export default function AuthModal({ onAuth, onClose }) {
     lastActionRef.current = () => handleVerifyOtp();
 
     try {
-      const response = await fetchWithRetry('/api/verify-otp', {
+      const response = await fetchWithRetry(`${API_BASE_URL}/api/verify-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: userEmail, otp: enteredCode })

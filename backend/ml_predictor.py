@@ -14,14 +14,22 @@ Supports:
 import os
 import math
 import json
-import joblib
 import urllib.request
 import urllib.error
 import numpy as np
-import pandas as pd
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+
+try:
+    import joblib
+except ImportError:
+    joblib = None
+
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
 
 # --- Model & Data Paths ---
 MODEL_DIR = Path(__file__).resolve().parent.parent / "ml_pipeline" / "saved_models"
@@ -32,22 +40,25 @@ _model = None
 FEATURE_COLS = ['hour', 'day_of_week', 'month', 'is_weekend', 'tariff_rate_inr', 'lag_1h', 'lag_24h', 'rolling_mean_3h', 'temperature_2m']
 
 def get_or_train_model():
-    """Loads winning XGBoost model or trains fallback on post-construction telemetry."""
+    """Loads winning XGBoost model or trains fallback; runs cleanly without heavy ML binaries."""
     global _model
     if _model is not None:
         return _model
 
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    if joblib is None:
+        return None
+
     if MODEL_FILE.exists():
         try:
             _model = joblib.load(MODEL_FILE)
             return _model
-        except Exception as e:
+        except (ImportError, Exception) as e:
             print(f"[EcoSense Warning] Model load note: {e}")
 
     try:
         import xgboost as xgb
-        if DATA_FILE.exists():
+        if pd is not None and DATA_FILE.exists():
+            MODEL_DIR.mkdir(parents=True, exist_ok=True)
             df_post = pd.read_csv(DATA_FILE)
             X = df_post[FEATURE_COLS]
             y = df_post['kwh_consumed']
@@ -61,7 +72,7 @@ def get_or_train_model():
             joblib.dump(model, MODEL_FILE)
             _model = model
             return _model
-    except Exception as e:
+    except (ImportError, Exception) as e:
         print(f"[EcoSense Warning] Model training note: {e}")
     return None
 
